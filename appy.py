@@ -35,7 +35,7 @@ def remove_outliers_mad(df, col_stress, window_size=5, z_threshold=3.5):
 # --- Streamlit UI ---
 st.set_page_config(page_title="Tensile Data Cleaner", layout="wide")
 st.title("Stress-Strain Anomaly Cleaner")
-st.markdown("Upload your raw data. The robust MAD algorithm will process the equipment drops and visualize the results.")
+st.markdown("Upload your raw data. The robust MAD algorithm will process the equipment drops and visualize the results vertically.")
 
 # File uploader
 uploaded_file = st.file_uploader("Upload Raw Data (TXT/CSV)", type=['txt', 'csv'])
@@ -56,58 +56,57 @@ if uploaded_file:
     # Process the data
     df_cleaned, outliers = remove_outliers_mad(df, col_stress, window_size, z_threshold)
 
-    # --- Side-by-Side Visualizations ---
-    col1, col2 = st.columns(2)
+    # --- Top Visualization: Raw Data ---
+    st.subheader("Raw Data & Detected Anomalies")
+    fig_raw = go.Figure()
+    
+    # Deep blue line for raw data
+    fig_raw.add_trace(go.Scatter(
+        x=df[col_deform], y=df[col_stress], 
+        mode='lines', 
+        name='Raw Data',
+        line=dict(color='#003366', width=2) 
+    ))
+    
+    # Red markers for the anomalies
+    fig_raw.add_trace(go.Scatter(
+        x=outliers[col_deform], y=outliers[col_stress], 
+        mode='markers', 
+        name='Anomalies',
+        marker=dict(color='#D32F2F', size=8, symbol='x')
+    ))
+    
+    fig_raw.update_layout(
+        plot_bgcolor='#FFFFFF',
+        paper_bgcolor='#FFFFFF',
+        xaxis=dict(title=col_deform, showgrid=True, gridcolor='#C0C0C0'), # Silver grid
+        yaxis=dict(title=col_stress, showgrid=True, gridcolor='#C0C0C0'),
+        margin=dict(l=20, r=20, t=30, b=20)
+    )
+    st.plotly_chart(fig_raw, use_container_width=True)
 
-    with col1:
-        st.subheader("Raw Data & Detected Anomalies")
-        fig_raw = go.Figure()
-        
-        # Deep blue line for raw data
-        fig_raw.add_trace(go.Scatter(
-            x=df[col_deform], y=df[col_stress], 
-            mode='lines', 
-            name='Raw Data',
-            line=dict(color='#003366', width=2) 
-        ))
-        
-        # Red markers for the anomalies
-        fig_raw.add_trace(go.Scatter(
-            x=outliers[col_deform], y=outliers[col_stress], 
-            mode='markers', 
-            name='Anomalies',
-            marker=dict(color='#D32F2F', size=8, symbol='x')
-        ))
-        
-        fig_raw.update_layout(
-            plot_bgcolor='#FFFFFF',
-            paper_bgcolor='#FFFFFF',
-            xaxis=dict(title=col_deform, showgrid=True, gridcolor='#C0C0C0'), # Silver grid
-            yaxis=dict(title=col_stress, showgrid=True, gridcolor='#C0C0C0'),
-            margin=dict(l=20, r=20, t=30, b=20)
-        )
-        st.plotly_chart(fig_raw, use_container_width=True)
+    st.markdown("---") # Visual separator between plots
 
-    with col2:
-        st.subheader("Cleaned Data")
-        fig_clean = go.Figure()
-        
-        # Deep blue line for cleaned data
-        fig_clean.add_trace(go.Scatter(
-            x=df_cleaned[col_deform], y=df_cleaned[col_stress], 
-            mode='lines', 
-            name='Cleaned Data',
-            line=dict(color='#003366', width=2)
-        ))
-        
-        fig_clean.update_layout(
-            plot_bgcolor='#FFFFFF',
-            paper_bgcolor='#FFFFFF',
-            xaxis=dict(title=col_deform, showgrid=True, gridcolor='#C0C0C0'), # Silver grid
-            yaxis=dict(title=col_stress, showgrid=True, gridcolor='#C0C0C0'),
-            margin=dict(l=20, r=20, t=30, b=20)
-        )
-        st.plotly_chart(fig_clean, use_container_width=True)
+    # --- Bottom Visualization: Cleaned Data ---
+    st.subheader("Cleaned Data")
+    fig_clean = go.Figure()
+    
+    # Deep blue line for cleaned data
+    fig_clean.add_trace(go.Scatter(
+        x=df_cleaned[col_deform], y=df_cleaned[col_stress], 
+        mode='lines', 
+        name='Cleaned Data',
+        line=dict(color='#003366', width=2)
+    ))
+    
+    fig_clean.update_layout(
+        plot_bgcolor='#FFFFFF',
+        paper_bgcolor='#FFFFFF',
+        xaxis=dict(title=col_deform, showgrid=True, gridcolor='#C0C0C0'), # Silver grid
+        yaxis=dict(title=col_stress, showgrid=True, gridcolor='#C0C0C0'),
+        margin=dict(l=20, r=20, t=30, b=20)
+    )
+    st.plotly_chart(fig_clean, use_container_width=True)
 
     # --- Output & Export ---
     st.success(f"Processing complete! The algorithm detected and removed **{len(outliers)}** outlier point(s).")
