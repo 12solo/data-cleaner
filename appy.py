@@ -6,7 +6,7 @@ from scipy.signal import savgol_filter
 import io
 
 def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size=5, z_threshold=3.5, 
-                       apply_smoothing=False, remove_breakpoint=False, anomaly_action='Interpolate'):
+                       apply_smoothing=False, remove_breakpoint=True, anomaly_action='Delete Rows'):
     """
     Precision cleaner with anomaly dilation, breakpoint removal, and robust exporting.
     """
@@ -40,7 +40,7 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
         df_calc.loc[final_anomaly_mask, col_stress] = np.nan
         df_calc[col_stress] = df_calc[col_stress].interpolate(method='linear', limit_direction='both')
     else:
-        # Completely drop the bad rows
+        # COMPLETELY DROP THE BAD ROWS (Default)
         df_calc = df_calc[~final_anomaly_mask].reset_index(drop=True)
     
     # 5. Breakpoint / Fracture Removal
@@ -53,7 +53,7 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
             steepest_drop_idx = post_peak[col_stress].diff().idxmin()
             
             if pd.notna(steepest_drop_idx):
-                # Truncate the dataframe to right before the material snapped
+                # Truncate the dataframe to right before the material snapped (deleting all data after the break)
                 df_calc = df_calc.loc[:steepest_drop_idx - 1].reset_index(drop=True)
 
     # 6. Optional Smoothing
@@ -95,7 +95,8 @@ if uploaded_file:
     win_size = st.sidebar.slider("Analysis Window", 3, 51, 11, step=2)
     
     st.sidebar.header("3. Cleaning Method")
-    action = st.sidebar.radio("How to handle bad points:", ("Interpolate", "Delete Rows"), 
+    # CHANGED DEFAULT TO 'Delete Rows' using index=1
+    action = st.sidebar.radio("How to handle bad points:", ("Interpolate", "Delete Rows"), index=1, 
                               help="Interpolating draws a straight line over the slip. Deleting removes the rows entirely from the downloaded file.")
     
     st.sidebar.header("4. Post-Processing")
@@ -134,7 +135,7 @@ if uploaded_file:
     st.plotly_chart(fig_clean, use_container_width=True)
 
     # --- Output & Export ---
-    st.success(f"Processing complete! The algorithm detected and removed **{len(outliers)}** outlier point(s) between {min_deform}mm and {max_deform}mm.")
+    st.success(f"Processing complete! The algorithm detected and removed **{len(outliers)}** outlier point(s) between {min_deform}mm and {max_deform}mm. Your raw data had **{len(df)}** rows, and your cleaned download now has **{len(df_cleaned)}** rows.")
 
     # 1. Prepare TXT (Tab Separated)
     csv = df_cleaned.to_csv(sep='\t', index=False).encode('utf-8')
