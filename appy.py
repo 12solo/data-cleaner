@@ -133,29 +133,23 @@ if uploaded_file:
     fig_clean.update_layout(template="plotly_white", margin=dict(l=20, r=20, t=30, b=20), xaxis_title=col_deform, yaxis_title=col_stress)
     st.plotly_chart(fig_clean, use_container_width=True)
 
-    # --- Export ---
-    st.markdown("---")
-    st.success(f"Successfully cleaned! Removed/repaired **{len(outliers)}** slip points. Final dataset contains **{len(df_cleaned)}** points.")
-    
-    # 1. CSV Setup
-    csv_data = df_cleaned.to_csv(index=False).encode('utf-8')
-    
-    # 2. TXT Setup (Tab separated)
-    txt_data = df_cleaned.to_csv(sep='\t', index=False).encode('utf-8')
-    
-    # 3. Excel (XLSX) Setup
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-        df_cleaned.to_excel(writer, index=False, sheet_name='Cleaned Data')
-    excel_data = excel_buffer.getvalue()
+   # --- Output & Export ---
 
-    # Download Buttons
-    st.write("### Download Cleaned Data")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.download_button(label="📄 Download CSV", data=csv_data, file_name="cleaned_tensile.csv", mime="text/csv")
-    with col2:
-        st.download_button(label="📝 Download TXT", data=txt_data, file_name="cleaned_tensile.txt", mime="text/plain")
-    with col3:
+    st.success(f"Processing complete! The algorithm detected and removed **{len(outliers)}** outlier point(s) between {min_deform}mm and {max_deform}mm.")
+
+
+
+    csv = df_cleaned.to_csv(sep='\t', index=False).encode('utf-8')
+
+    st.download_button(
+
+        label="Download Cleaned Data",
+
+        data=csv,
+
+        file_name="cleaned_tensile_data.txt",
+
+        mime="text/plain",
+
+    )" that detect the anolomies and clean it and keep the line trend
         st.download_button(label="📊 Download Excel", data=excel_data, file_name="cleaned_tensile.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
