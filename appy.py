@@ -8,11 +8,13 @@ import io
 def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size=5, z_threshold=3.5, 
                        apply_smoothing=False, remove_breakpoint=True, anomaly_action='Delete Rows', dilation_pts=2):
     """
-    Precision cleaner with dynamic anomaly dilation to fully erase wide equipment slips.
+    Bulletproof cleaner that respects original row order and uses hard index-dropping.
     """
-    df_calc = df.copy().sort_values(by=col_deform).reset_index(drop=True)
+    # 1. CRITICAL FIX: Do NOT sort the data. Tensile data is sequential. 
+    # Sorting it scrambles sensor noise/springback. Keep original order.
+    df_calc = df.copy()
     
-    # 1. Calculate Rolling Median and MAD
+    # 2. Calculate Rolling Median and MAD
     df_calc['Rolling_Median'] = df_calc[col_stress].rolling(window=window_size, center=True).median().fillna(df_calc[col_stress])
     
     def calculate_mad(x):
@@ -20,15 +22,14 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
         
     df_calc['Rolling_MAD'] = df_calc[col_stress].rolling(window=window_size, center=True).apply(calculate_mad).replace(0, 1e-6).fillna(1e-6)
     
-    # 2. Calculate Modified Z-Score
+    # 3. Calculate Modified Z-Score
     df_calc['Mod_Z_Score'] = 0.6745 * np.abs(df_calc[col_stress] - df_calc['Rolling_Median']) / df_calc['Rolling_MAD']
     
-    # 3. Target boundaries and initial detection
+    # 4. Target boundaries and initial detection
     in_target_region = (df_calc[col_deform] >= min_def) & (df_calc[col_deform] <= max_def)
     initial_anomalies = df_calc['Mod_Z_Score'] > z_threshold
     
-    # 4. DYNAMIC MASK DILATION: Erase the 'walls' around the slip
-    # This expands the deletion zone by X points on either side of the detected anomaly
+    # 5. DYNAMIC MASK DILATION: Erase the 'walls' around the slip
     if dilation_pts > 0:
         dilated_anomalies = initial_anomalies.rolling(window=(2 * dilation_pts) + 1, center=True, min_periods=1).max().astype(bool)
     else:
@@ -36,18 +37,18 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
 
     final_anomaly_mask = dilated_anomalies & in_target_region
     
-    # Save outliers for the graph
+    # Save outliers for the graph BEFORE we delete them
     outliers = df_calc[final_anomaly_mask].copy()
 
-    # 5. Handle Anomalies
-    if anomaly_action == 'Interpolate':
+    # 6. HARD DELETION
+    if anomaly_action == 'Delete Rows':
+        # Literally drop the exact indexes from the dataframe
+        df_calc = df_calc.drop(index=outliers.index)
+    else:
         df_calc.loc[final_anomaly_mask, col_stress] = np.nan
         df_calc[col_stress] = df_calc[col_stress].interpolate(method='linear', limit_direction='both')
-    else:
-        # STRICT DELETION: Completely drop the rows and reset index
-        df_calc = df_calc[~final_anomaly_mask].reset_index(drop=True)
     
-    # 6. Breakpoint / Fracture Removal
+    # 7. Breakpoint / Fracture Removal
     if remove_breakpoint:
         peak_idx = df_calc[col_stress].idxmax()
         post_peak = df_calc.loc[peak_idx:].copy()
@@ -55,20 +56,21 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
         if len(post_peak) > 1:
             steepest_drop_idx = post_peak[col_stress].diff().idxmin()
             if pd.notna(steepest_drop_idx):
-                # Cut off everything after the break
-                df_calc = df_calc.loc[:steepest_drop_idx - 1].reset_index(drop=True)
+                # Find all indexes from the drop onwards and hard-delete them
+                bad_tail_indexes = df_calc.loc[steepest_drop_idx:].index
+                df_calc = df_calc.drop(index=bad_tail_indexes)
 
-    # 7. Optional Smoothing
+    # 8. Optional Smoothing
     if apply_smoothing:
         savgol_win = int(window_size) if int(window_size) % 2 != 0 else int(window_size) + 1
         if len(df_calc) > savgol_win:
             df_calc[col_stress] = savgol_filter(df_calc[col_stress], savgol_win, 3)
 
-    # Clean up calculation columns and ensure NO empty rows remain
+    # 9. Final Cleanup
     cols_to_drop = ['Rolling_Median', 'Rolling_MAD', 'Mod_Z_Score']
     cols_to_drop = [c for c in cols_to_drop if c in df_calc.columns]
     
-    df_final = df_calc.drop(columns=cols_to_drop).dropna().reset_index(drop=True)
+    df_final = df_calc.drop(columns=cols_to_drop).dropna(subset=[col_deform, col_stress]).reset_index(drop=True)
     return df_final, outliers
 
 # --- Streamlit UI ---
@@ -83,7 +85,7 @@ if uploaded_file:
     col_deform = df.columns[1]
     col_stress = df.columns[2]
 
-    # --- CRITICAL FIX: Force Data to Numeric ---
+    # Force Data to Numeric (removes text headers/units)
     df[col_deform] = pd.to_numeric(df[col_deform], errors='coerce')
     df[col_stress] = pd.to_numeric(df[col_stress], errors='coerce')
     df = df.dropna(subset=[col_deform, col_stress]).reset_index(drop=True)
@@ -97,7 +99,6 @@ if uploaded_file:
     z_thresh = st.sidebar.slider("Anomaly Sensitivity (Lower = Stricter)", 0.5, 10.0, 3.5)
     win_size = st.sidebar.slider("Analysis Window", 3, 51, 11, step=2)
     
-    # NEW FEATURE: Erase the "walls" of the slip
     st.sidebar.markdown("---")
     st.sidebar.subheader("Deletion Expansion")
     dilation = st.sidebar.slider("Slip Width Erase (Points)", 0, 15, 3, 
@@ -141,18 +142,18 @@ if uploaded_file:
     st.plotly_chart(fig_clean, use_container_width=True)
 
     # --- Output & Export ---
-    st.success(f"Processing complete! The algorithm aggressively deleted **{len(outliers)}** bad point(s). Your raw data had **{len(df)}** rows, and your fully cleaned download now strictly has **{len(df_cleaned)}** rows.")
+    st.success(f"Processing complete! Original data rows: **{len(df)}**. Final cleaned rows: **{len(df_cleaned)}**. Total removed: **{len(df) - len(df_cleaned)}**.")
 
-    # 1. Prepare TXT (Tab Separated)
+    # Prepare TXT (Tab Separated)
     csv = df_cleaned.to_csv(sep='\t', index=False).encode('utf-8')
     
-    # 2. Prepare Excel (XLSX)
+    # Prepare Excel (XLSX)
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
         df_cleaned.to_excel(writer, index=False, sheet_name='Cleaned Data')
     excel_data = excel_buffer.getvalue()
 
-    # Create two columns to hold your specific buttons
+    # Download Buttons
     col1, col2 = st.columns([1, 1])
 
     with col1:
