@@ -6,11 +6,10 @@ from scipy.signal import savgol_filter
 import io
 
 def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size=5, z_threshold=3.5, 
-                       apply_smoothing=False, remove_breakpoint=True, anomaly_action='Delete Rows'):
+                       apply_smoothing=False, remove_breakpoint=True, anomaly_action='Delete Rows', dilation_pts=2):
     """
-    Precision cleaner with anomaly dilation, breakpoint removal, and robust exporting.
+    Precision cleaner with dynamic anomaly dilation to fully erase wide equipment slips.
     """
-    # Sort and reset index to ensure clean sequential operations
     df_calc = df.copy().sort_values(by=col_deform).reset_index(drop=True)
     
     # 1. Calculate Rolling Median and MAD
@@ -28,44 +27,49 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
     in_target_region = (df_calc[col_deform] >= min_def) & (df_calc[col_deform] <= max_def)
     initial_anomalies = df_calc['Mod_Z_Score'] > z_threshold
     
-    # Mask Dilation: Catch the 'walls' of the slip
-    dilated_anomalies = initial_anomalies | initial_anomalies.shift(1).fillna(False) | initial_anomalies.shift(-1).fillna(False)
+    # 4. DYNAMIC MASK DILATION: Erase the 'walls' around the slip
+    # This expands the deletion zone by X points on either side of the detected anomaly
+    if dilation_pts > 0:
+        dilated_anomalies = initial_anomalies.rolling(window=(2 * dilation_pts) + 1, center=True, min_periods=1).max().astype(bool)
+    else:
+        dilated_anomalies = initial_anomalies
+
     final_anomaly_mask = dilated_anomalies & in_target_region
     
     # Save outliers for the graph
     outliers = df_calc[final_anomaly_mask].copy()
 
-    # 4. Handle Anomalies (Interpolate vs Delete)
+    # 5. Handle Anomalies
     if anomaly_action == 'Interpolate':
         df_calc.loc[final_anomaly_mask, col_stress] = np.nan
         df_calc[col_stress] = df_calc[col_stress].interpolate(method='linear', limit_direction='both')
     else:
-        # COMPLETELY DROP THE BAD ROWS (Default)
+        # STRICT DELETION: Completely drop the rows and reset index
         df_calc = df_calc[~final_anomaly_mask].reset_index(drop=True)
     
-    # 5. Breakpoint / Fracture Removal
+    # 6. Breakpoint / Fracture Removal
     if remove_breakpoint:
         peak_idx = df_calc[col_stress].idxmax()
         post_peak = df_calc.loc[peak_idx:].copy()
         
         if len(post_peak) > 1:
-            # Find the sharpest negative drop after the peak stress
             steepest_drop_idx = post_peak[col_stress].diff().idxmin()
-            
             if pd.notna(steepest_drop_idx):
-                # Truncate the dataframe to right before the material snapped (deleting all data after the break)
+                # Cut off everything after the break
                 df_calc = df_calc.loc[:steepest_drop_idx - 1].reset_index(drop=True)
 
-    # 6. Optional Smoothing
+    # 7. Optional Smoothing
     if apply_smoothing:
         savgol_win = int(window_size) if int(window_size) % 2 != 0 else int(window_size) + 1
         if len(df_calc) > savgol_win:
             df_calc[col_stress] = savgol_filter(df_calc[col_stress], savgol_win, 3)
 
+    # Clean up calculation columns and ensure NO empty rows remain
     cols_to_drop = ['Rolling_Median', 'Rolling_MAD', 'Mod_Z_Score']
     cols_to_drop = [c for c in cols_to_drop if c in df_calc.columns]
     
-    return df_calc.drop(columns=cols_to_drop), outliers
+    df_final = df_calc.drop(columns=cols_to_drop).dropna().reset_index(drop=True)
+    return df_final, outliers
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Precision Tensile Cleaner", layout="wide")
@@ -80,7 +84,6 @@ if uploaded_file:
     col_stress = df.columns[2]
 
     # --- CRITICAL FIX: Force Data to Numeric ---
-    # This prevents the algorithm from failing if your file contains text/units in the data rows
     df[col_deform] = pd.to_numeric(df[col_deform], errors='coerce')
     df[col_stress] = pd.to_numeric(df[col_stress], errors='coerce')
     df = df.dropna(subset=[col_deform, col_stress]).reset_index(drop=True)
@@ -90,24 +93,27 @@ if uploaded_file:
     min_deform = st.sidebar.number_input("Min Deformation", value=float(df[col_deform].min()))
     max_deform = st.sidebar.number_input("Max Deformation", value=float(df[col_deform].max()))
 
-    st.sidebar.header("2. Slip Sensitivity")
+    st.sidebar.header("2. Slip Detection Settings")
     z_thresh = st.sidebar.slider("Anomaly Sensitivity (Lower = Stricter)", 0.5, 10.0, 3.5)
     win_size = st.sidebar.slider("Analysis Window", 3, 51, 11, step=2)
     
+    # NEW FEATURE: Erase the "walls" of the slip
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Deletion Expansion")
+    dilation = st.sidebar.slider("Slip Width Erase (Points)", 0, 15, 3, 
+                                 help="Increases the deletion zone to completely erase the 'crater' left by the machine slip.")
+
     st.sidebar.header("3. Cleaning Method")
-    # CHANGED DEFAULT TO 'Delete Rows' using index=1
-    action = st.sidebar.radio("How to handle bad points:", ("Interpolate", "Delete Rows"), index=1, 
-                              help="Interpolating draws a straight line over the slip. Deleting removes the rows entirely from the downloaded file.")
+    action = st.sidebar.radio("How to handle bad points:", ("Interpolate", "Delete Rows"), index=1)
     
     st.sidebar.header("4. Post-Processing")
-    remove_break = st.sidebar.checkbox("✂️ Auto-Remove Breakpoint/Fracture", value=True, 
-                                       help="Automatically cuts off the sharp drop at the end of the test.")
+    remove_break = st.sidebar.checkbox("✂️ Auto-Remove Breakpoint/Fracture", value=True)
     smooth_on = st.sidebar.checkbox("🌊 Apply Savitzky-Golay Smoothing", value=False)
 
     # Process Data
     df_cleaned, outliers = clean_tensile_data(
         df, col_deform, col_stress, min_deform, max_deform, 
-        win_size, z_thresh, smooth_on, remove_break, action
+        win_size, z_thresh, smooth_on, remove_break, action, dilation
     )
 
     # --- Top Visualization: Raw Data ---
@@ -116,7 +122,7 @@ if uploaded_file:
     fig_raw = go.Figure()
     
     fig_raw.add_trace(go.Scatter(x=df[col_deform], y=df[col_stress], name='Raw Data', line=dict(color='lightgrey', width=2)))
-    fig_raw.add_trace(go.Scatter(x=outliers[col_deform], y=outliers[col_stress], mode='markers', name='Detected Slips', marker=dict(color='red', size=8, symbol='x')))
+    fig_raw.add_trace(go.Scatter(x=outliers[col_deform], y=outliers[col_stress], mode='markers', name='Points Flagged for Deletion', marker=dict(color='red', size=8, symbol='x')))
     
     fig_raw.add_vline(x=min_deform, line_width=1, line_dash="dash", line_color="gray", annotation_text="Min Target")
     fig_raw.add_vline(x=max_deform, line_width=1, line_dash="dash", line_color="gray", annotation_text="Max Target")
@@ -135,7 +141,7 @@ if uploaded_file:
     st.plotly_chart(fig_clean, use_container_width=True)
 
     # --- Output & Export ---
-    st.success(f"Processing complete! The algorithm detected and removed **{len(outliers)}** outlier point(s) between {min_deform}mm and {max_deform}mm. Your raw data had **{len(df)}** rows, and your cleaned download now has **{len(df_cleaned)}** rows.")
+    st.success(f"Processing complete! The algorithm aggressively deleted **{len(outliers)}** bad point(s). Your raw data had **{len(df)}** rows, and your fully cleaned download now strictly has **{len(df_cleaned)}** rows.")
 
     # 1. Prepare TXT (Tab Separated)
     csv = df_cleaned.to_csv(sep='\t', index=False).encode('utf-8')
@@ -151,7 +157,7 @@ if uploaded_file:
 
     with col1:
         st.download_button(
-            label="Download Cleaned Data",
+            label="Download Cleaned Data (TXT)",
             data=csv,
             file_name="cleaned_tensile_data.txt",
             mime="text/plain",
@@ -159,7 +165,7 @@ if uploaded_file:
         
     with col2:
         st.download_button(
-            label="📊 Download Excel", 
+            label="📊 Download Excel (XLSX)", 
             data=excel_data, 
             file_name="cleaned_tensile.xlsx", 
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
