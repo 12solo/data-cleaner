@@ -57,13 +57,13 @@ if uploaded_file:
     
     # Interactive sliders/inputs to target the specific drop
     # Default values are set around the known anomaly at ~60mm
-    min_deform = st.sidebar.number_input("Target Range: Min Deformation (mm)", value=55.0)
-    max_deform = st.sidebar.number_input("Target Range: Max Deformation (mm)", value=65.0)
+    min_deform = st.sidebar.number_input("Target Range: Min Deformation (mm)", value=5.0)
+    max_deform = st.sidebar.number_input("Target Range: Max Deformation (mm)", value=40.0)
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("Algorithm Sensitivity")
-    z_threshold = st.sidebar.slider("Anomaly Threshold", min_value=0.05, max_value=10.0, value=3.5, step=0.5)
-    window_size = st.sidebar.slider("Rolling Window Size", min_value=3, max_value=30, value=5, step=2)
+    z_threshold = st.sidebar.slider("Anomaly Threshold", min_value=0.01, max_value=10.0, value=3.5, step=0.5)
+    window_size = st.sidebar.slider("Rolling Window Size", min_value=3, max_value=40, value=5, step=2)
 
     # Process the data with the targeted boundaries
     df_cleaned, outliers = remove_outliers_targeted(df, col_deform, col_stress, min_deform, max_deform, window_size, z_threshold)
