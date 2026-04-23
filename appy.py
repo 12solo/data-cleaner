@@ -38,7 +38,6 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
     # 4. Handle Anomalies (Interpolate vs Delete)
     if anomaly_action == 'Interpolate':
         df_calc.loc[final_anomaly_mask, col_stress] = np.nan
-        # limit_direction='both' ensures no NaNs are left behind in the downloaded file
         df_calc[col_stress] = df_calc[col_stress].interpolate(method='linear', limit_direction='both')
     else:
         # Completely drop the bad rows
@@ -64,7 +63,6 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
             df_calc[col_stress] = savgol_filter(df_calc[col_stress], savgol_win, 3)
 
     cols_to_drop = ['Rolling_Median', 'Rolling_MAD', 'Mod_Z_Score']
-    # Only drop calculation columns if they still exist
     cols_to_drop = [c for c in cols_to_drop if c in df_calc.columns]
     
     return df_calc.drop(columns=cols_to_drop), outliers
@@ -80,6 +78,12 @@ if uploaded_file:
     
     col_deform = df.columns[1]
     col_stress = df.columns[2]
+
+    # --- CRITICAL FIX: Force Data to Numeric ---
+    # This prevents the algorithm from failing if your file contains text/units in the data rows
+    df[col_deform] = pd.to_numeric(df[col_deform], errors='coerce')
+    df[col_stress] = pd.to_numeric(df[col_stress], errors='coerce')
+    df = df.dropna(subset=[col_deform, col_stress]).reset_index(drop=True)
 
     # --- Sidebar Controls ---
     st.sidebar.header("1. Target Slip Region")
