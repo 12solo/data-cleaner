@@ -133,23 +133,33 @@ if uploaded_file:
     fig_clean.update_layout(template="plotly_white", margin=dict(l=20, r=20, t=30, b=20), xaxis_title=col_deform, yaxis_title=col_stress)
     st.plotly_chart(fig_clean, use_container_width=True)
 
-   # --- Output & Export ---
-
+    # --- Output & Export ---
     st.success(f"Processing complete! The algorithm detected and removed **{len(outliers)}** outlier point(s) between {min_deform}mm and {max_deform}mm.")
 
-
-
+    # 1. Prepare TXT (Tab Separated)
     csv = df_cleaned.to_csv(sep='\t', index=False).encode('utf-8')
+    
+    # 2. Prepare Excel (XLSX)
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        df_cleaned.to_excel(writer, index=False, sheet_name='Cleaned Data')
+    excel_data = excel_buffer.getvalue()
 
-    st.download_button(
+    # Create two columns to hold your specific buttons
+    col1, col2 = st.columns([1, 1])
 
-        label="Download Cleaned Data",
-
-        data=csv,
-
-        file_name="cleaned_tensile_data.txt",
-
-        mime="text/plain",
-
-    )" that detect the anolomies and clean it and keep the line trend
-        st.download_button(label="📊 Download Excel", data=excel_data, file_name="cleaned_tensile.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with col1:
+        st.download_button(
+            label="Download Cleaned Data",
+            data=csv,
+            file_name="cleaned_tensile_data.txt",
+            mime="text/plain",
+        )
+        
+    with col2:
+        st.download_button(
+            label="📊 Download Excel", 
+            data=excel_data, 
+            file_name="cleaned_tensile.xlsx", 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
