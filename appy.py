@@ -63,7 +63,7 @@ if uploaded_file:
     st.sidebar.markdown("---")
     st.sidebar.markdown("Algorithm Sensitivity")
     z_threshold = st.sidebar.slider("Anomaly Threshold", min_value=0.01, max_value=10.0, value=3.5, step=0.5)
-    window_size = st.sidebar.slider("Rolling Window Size", min_value=1, max_value=40, value=5, step=0.5)
+    window_size = st.sidebar.slider("Rolling Window Size", min_value=3, max_value=40, value=5, step=0.5)
 
     # Process the data with the targeted boundaries
     df_cleaned, outliers = remove_outliers_targeted(df, col_deform, col_stress, min_deform, max_deform, window_size, z_threshold)
