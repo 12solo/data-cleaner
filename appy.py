@@ -10,11 +10,9 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
     """
     Bulletproof cleaner that respects original row order and uses hard index-dropping.
     """
-    # 1. CRITICAL FIX: Do NOT sort the data. Tensile data is sequential. 
-    # Sorting it scrambles sensor noise/springback. Keep original order.
     df_calc = df.copy()
     
-    # 2. Calculate Rolling Median and MAD
+    # 1. Calculate Rolling Median and MAD
     df_calc['Rolling_Median'] = df_calc[col_stress].rolling(window=window_size, center=True).median().fillna(df_calc[col_stress])
     
     def calculate_mad(x):
@@ -22,14 +20,14 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
         
     df_calc['Rolling_MAD'] = df_calc[col_stress].rolling(window=window_size, center=True).apply(calculate_mad).replace(0, 1e-6).fillna(1e-6)
     
-    # 3. Calculate Modified Z-Score
+    # 2. Calculate Modified Z-Score
     df_calc['Mod_Z_Score'] = 0.6745 * np.abs(df_calc[col_stress] - df_calc['Rolling_Median']) / df_calc['Rolling_MAD']
     
-    # 4. Target boundaries and initial detection
+    # 3. Target boundaries and initial detection
     in_target_region = (df_calc[col_deform] >= min_def) & (df_calc[col_deform] <= max_def)
     initial_anomalies = df_calc['Mod_Z_Score'] > z_threshold
     
-    # 5. DYNAMIC MASK DILATION: Erase the 'walls' around the slip
+    # 4. DYNAMIC MASK DILATION: Erase the 'walls' around the slip
     if dilation_pts > 0:
         dilated_anomalies = initial_anomalies.rolling(window=(2 * dilation_pts) + 1, center=True, min_periods=1).max().astype(bool)
     else:
@@ -40,15 +38,14 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
     # Save outliers for the graph BEFORE we delete them
     outliers = df_calc[final_anomaly_mask].copy()
 
-    # 6. HARD DELETION
+    # 5. HARD DELETION
     if anomaly_action == 'Delete Rows':
-        # Literally drop the exact indexes from the dataframe
         df_calc = df_calc.drop(index=outliers.index)
     else:
         df_calc.loc[final_anomaly_mask, col_stress] = np.nan
         df_calc[col_stress] = df_calc[col_stress].interpolate(method='linear', limit_direction='both')
     
-    # 7. Breakpoint / Fracture Removal
+    # 6. Breakpoint / Fracture Removal
     if remove_breakpoint:
         peak_idx = df_calc[col_stress].idxmax()
         post_peak = df_calc.loc[peak_idx:].copy()
@@ -56,17 +53,16 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
         if len(post_peak) > 1:
             steepest_drop_idx = post_peak[col_stress].diff().idxmin()
             if pd.notna(steepest_drop_idx):
-                # Find all indexes from the drop onwards and hard-delete them
                 bad_tail_indexes = df_calc.loc[steepest_drop_idx:].index
                 df_calc = df_calc.drop(index=bad_tail_indexes)
 
-    # 8. Optional Smoothing
+    # 7. Optional Smoothing
     if apply_smoothing:
         savgol_win = int(window_size) if int(window_size) % 2 != 0 else int(window_size) + 1
         if len(df_calc) > savgol_win:
             df_calc[col_stress] = savgol_filter(df_calc[col_stress], savgol_win, 3)
 
-    # 9. Final Cleanup
+    # 8. Final Cleanup
     cols_to_drop = ['Rolling_Median', 'Rolling_MAD', 'Mod_Z_Score']
     cols_to_drop = [c for c in cols_to_drop if c in df_calc.columns]
     
@@ -80,15 +76,28 @@ st.title("🔬 Precision Stress-Strain Cleaner")
 uploaded_file = st.file_uploader("Upload Raw Data (TXT/CSV)", type=['txt', 'csv'])
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file, sep=None, engine='python') 
+    # Try tab-separated first, fallback to whitespace if needed
+    try:
+        df = pd.read_csv(uploaded_file, sep='\t')
+        if len(df.columns) < 2:
+            uploaded_file.seek(0)
+            df = pd.read_csv(uploaded_file, sep=r'\s+')
+    except:
+        uploaded_file.seek(0)
+        df = pd.read_csv(uploaded_file, sep=None, engine='python') 
     
-    col_deform = df.columns[1]
-    col_stress = df.columns[2]
-
     # Force Data to Numeric (removes text headers/units)
-    df[col_deform] = pd.to_numeric(df[col_deform], errors='coerce')
-    df[col_stress] = pd.to_numeric(df[col_stress], errors='coerce')
-    df = df.dropna(subset=[col_deform, col_stress]).reset_index(drop=True)
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.dropna().reset_index(drop=True)
+
+    # --- NEW FEATURE: COLUMN SELECTORS ---
+    st.sidebar.header("0. Select Data Columns")
+    st.sidebar.markdown("Pick the column that actually contains the jagged anomaly (usually Load/Carico).")
+    
+    # Default X to Deformazione (Index 1) and Y to Carico (Index 0)
+    col_deform = st.sidebar.selectbox("X-Axis (Deformation)", df.columns, index=1)
+    col_stress = st.sidebar.selectbox("Y-Axis (Target for Detection)", df.columns, index=0)
 
     # --- Sidebar Controls ---
     st.sidebar.header("1. Target Slip Region")
@@ -97,7 +106,7 @@ if uploaded_file:
 
     st.sidebar.header("2. Slip Detection Settings")
     z_thresh = st.sidebar.slider("Anomaly Sensitivity (Lower = Stricter)", 0.5, 10.0, 3.5)
-    win_size = st.sidebar.slider("Analysis Window", 3, 51, 11, step=2)
+    win_size = st.sidebar.slider("Analysis Window", 3, 51, 21, step=2) # Defaulted higher for your wide slips
     
     st.sidebar.markdown("---")
     st.sidebar.subheader("Deletion Expansion")
@@ -119,7 +128,7 @@ if uploaded_file:
 
     # --- Top Visualization: Raw Data ---
     st.markdown("---")
-    st.subheader("Raw Data & Detected Slips")
+    st.subheader(f"Raw Data: {col_stress} vs {col_deform}")
     fig_raw = go.Figure()
     
     fig_raw.add_trace(go.Scatter(x=df[col_deform], y=df[col_stress], name='Raw Data', line=dict(color='lightgrey', width=2)))
