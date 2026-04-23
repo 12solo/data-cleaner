@@ -6,41 +6,50 @@ from scipy.signal import savgol_filter
 
 def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size=5, z_threshold=3.5, apply_smoothing=False):
     """
-    Cleans anomalies using MAD and replaces them with interpolated values 
-    to maintain the physical line trend.
+    Precision cleaner that uses MAD, dilates the anomaly mask to catch the 'walls' 
+    of the slip, and interpolates the removed region.
     """
-    df_calc = df.copy().sort_values(by=col_deform)
+    # Sort and reset index to ensure clean sequential operations
+    df_calc = df.copy().sort_values(by=col_deform).reset_index(drop=True)
     
-    # 1. Calculate Modified Z-Score for anomaly detection
+    # 1. Calculate Rolling Median and MAD
     df_calc['Rolling_Median'] = df_calc[col_stress].rolling(window=window_size, center=True).median().fillna(df_calc[col_stress])
     
     def calculate_mad(x):
         return np.median(np.abs(x - np.median(x)))
         
-    df_calc['Rolling_MAD'] = df_calc[col_stress].rolling(window=window_size, center=True).apply(calculate_mad).replace(0, 1e-6)
+    df_calc['Rolling_MAD'] = df_calc[col_stress].rolling(window=window_size, center=True).apply(calculate_mad).replace(0, 1e-6).fillna(1e-6)
+    
+    # 2. Calculate Modified Z-Score
     df_calc['Mod_Z_Score'] = 0.6745 * np.abs(df_calc[col_stress] - df_calc['Rolling_Median']) / df_calc['Rolling_MAD']
     
-    # 2. Logic: Identify points to be "Repaired"
+    # 3. Target boundaries and initial detection
     in_target_region = (df_calc[col_deform] >= min_def) & (df_calc[col_deform] <= max_def)
-    is_anomaly = df_calc['Mod_Z_Score'] > z_threshold
+    initial_anomalies = df_calc['Mod_Z_Score'] > z_threshold
     
-    # 3. Precision Cleaning: Interpolate rather than Drop
-    # We set anomalous stress values to NaN, then interpolate
-    df_calc.loc[is_anomaly & in_target_region, col_stress] = np.nan
+    # ACCURACY UPGRADE: Mask Dilation
+    # When a slip occurs, the points right next to the peak anomaly are often corrupted too.
+    # This expands the 'bad' zone by 1 point on each side to ensure the whole slip is removed.
+    dilated_anomalies = initial_anomalies | initial_anomalies.shift(1).fillna(False) | initial_anomalies.shift(-1).fillna(False)
     
-    # 'linear' interpolation maintains the trend between the last known good points
+    # Apply to target region only
+    final_anomaly_mask = dilated_anomalies & in_target_region
+    
+    # 4. Precision Cleaning: Set to NaN and Interpolate
+    df_calc.loc[final_anomaly_mask, col_stress] = np.nan
     df_calc[col_stress] = df_calc[col_stress].interpolate(method='linear')
     
-    # 4. Optional: Savitzky-Golay Smoothing (Preserves peaks while removing noise)
+    # 5. Optional Smoothing
     if apply_smoothing:
         # Window length must be odd and greater than polynomial order (3)
-        savgol_win = window_size if window_size % 2 != 0 else window_size + 1
+        savgol_win = int(window_size) if int(window_size) % 2 != 0 else int(window_size) + 1
         if len(df_calc) > savgol_win:
             df_calc[col_stress] = savgol_filter(df_calc[col_stress], savgol_win, 3)
 
-    outliers = df[is_anomaly & in_target_region].copy()
+    outliers = df[final_anomaly_mask].copy()
     
-    return df_calc.drop(columns=['Rolling_Median', 'Rolling_MAD', 'Mod_Z_Score']), outliers
+    cols_to_drop = ['Rolling_Median', 'Rolling_MAD', 'Mod_Z_Score']
+    return df_calc.drop(columns=cols_to_drop), outliers
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Precision Tensile Cleaner", layout="wide")
@@ -70,26 +79,49 @@ if uploaded_file:
     # Process
     df_cleaned, outliers = clean_tensile_data(df, col_deform, col_stress, min_deform, max_deform, win_size, z_thresh, smooth_on)
 
-    # --- Visualization ---
-    col1, col2 = st.columns(2)
+    # --- Top Visualization: Raw Data ---
+    st.markdown("---")
+    st.subheader("Raw Data & Detected Anomalies")
+    fig_raw = go.Figure()
+    
+    fig_raw.add_trace(go.Scatter(x=df[col_deform], y=df[col_stress], name='Raw Data', line=dict(color='lightgrey', width=2)))
+    fig_raw.add_trace(go.Scatter(x=outliers[col_deform], y=outliers[col_stress], mode='markers', name='Detected Slips', marker=dict(color='red', size=8, symbol='x')))
+    
+    # Bounding box lines
+    fig_raw.add_vline(x=min_deform, line_width=1, line_dash="dash", line_color="gray", annotation_text="Min Target")
+    fig_raw.add_vline(x=max_deform, line_width=1, line_dash="dash", line_color="gray", annotation_text="Max Target")
+    
+    fig_raw.update_layout(
+        template="plotly_white", 
+        margin=dict(l=20, r=20, t=30, b=20),
+        xaxis_title=col_deform,
+        yaxis_title=col_stress
+    )
+    st.plotly_chart(fig_raw, use_container_width=True)
 
-    with col1:
-        st.subheader("Anomaly Detection")
-        fig_raw = go.Figure()
-        fig_raw.add_trace(go.Scatter(x=df[col_deform], y=df[col_stress], name='Raw Data', line=dict(color='lightgrey')))
-        fig_raw.add_trace(go.Scatter(x=outliers[col_deform], y=outliers[col_stress], mode='markers', name='Detected Slips', marker=dict(color='red', symbol='x')))
-        fig_raw.update_layout(template="plotly_white", margin=dict(l=0,r=0,b=0,t=30))
-        st.plotly_chart(fig_raw, use_container_width=True)
-
-    with col2:
-        st.subheader("Cleaned Trend")
-        fig_clean = go.Figure()
-        fig_clean.add_trace(go.Scatter(x=df_cleaned[col_deform], y=df_cleaned[col_stress], name='Cleaned/Interpolated', line=dict(color='blue', width=2)))
-        fig_clean.update_layout(template="plotly_white", margin=dict(l=0,r=0,b=0,t=30))
-        st.plotly_chart(fig_clean, use_container_width=True)
+    # --- Bottom Visualization: Cleaned Data ---
+    st.markdown("---")
+    st.subheader("Cleaned Trend")
+    fig_clean = go.Figure()
+    
+    fig_clean.add_trace(go.Scatter(x=df_cleaned[col_deform], y=df_cleaned[col_stress], name='Cleaned/Interpolated', line=dict(color='#003366', width=2)))
+    
+    fig_clean.update_layout(
+        template="plotly_white", 
+        margin=dict(l=20, r=20, t=30, b=20),
+        xaxis_title=col_deform,
+        yaxis_title=col_stress
+    )
+    st.plotly_chart(fig_clean, use_container_width=True)
 
     # --- Export ---
-    st.success(f"Successfully repaired {len(outliers)} points. Trend preserved via linear interpolation.")
+    st.markdown("---")
+    st.success(f"Successfully removed and repaired **{len(outliers)}** anomalous points. Trend preserved via linear interpolation.")
     
     csv = df_cleaned.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Precision Cleaned Data", data=csv, file_name="cleaned_tensile_data.csv", mime="text/csv")
+    st.download_button(
+        label="Download Precision Cleaned Data", 
+        data=csv, 
+        file_name="cleaned_tensile_data.csv", 
+        mime="text/csv"
+    )
