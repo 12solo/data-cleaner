@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from scipy.signal import savgol_filter
+import io
 
 def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size=5, z_threshold=3.5, apply_smoothing=False):
     """
@@ -28,8 +29,6 @@ def clean_tensile_data(df, col_deform, col_stress, min_def, max_def, window_size
     initial_anomalies = df_calc['Mod_Z_Score'] > z_threshold
     
     # ACCURACY UPGRADE: Mask Dilation
-    # When a slip occurs, the points right next to the peak anomaly are often corrupted too.
-    # This expands the 'bad' zone by 1 point on each side to ensure the whole slip is removed.
     dilated_anomalies = initial_anomalies | initial_anomalies.shift(1).fillna(False) | initial_anomalies.shift(-1).fillna(False)
     
     # Apply to target region only
@@ -118,10 +117,43 @@ if uploaded_file:
     st.markdown("---")
     st.success(f"Successfully removed and repaired **{len(outliers)}** anomalous points. Trend preserved via linear interpolation.")
     
-    csv = df_cleaned.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="Download Precision Cleaned Data", 
-        data=csv, 
-        file_name="cleaned_tensile_data.csv", 
-        mime="text/csv"
-    )
+    # Prepare files for download
+    # 1. CSV
+    csv_data = df_cleaned.to_csv(index=False).encode('utf-8')
+    
+    # 2. TXT (Tab separated)
+    txt_data = df_cleaned.to_csv(sep='\t', index=False).encode('utf-8')
+    
+    # 3. Excel (XLSX) - requires io.BytesIO to write to memory
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        df_cleaned.to_excel(writer, index=False, sheet_name='Cleaned Data')
+    excel_data = excel_buffer.getvalue()
+
+    # Layout buttons side-by-side
+    st.write("### Download Cleaned Data")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.download_button(
+            label="📄 Download as CSV", 
+            data=csv_data, 
+            file_name="cleaned_tensile_data.csv", 
+            mime="text/csv"
+        )
+        
+    with col2:
+        st.download_button(
+            label="📝 Download as TXT", 
+            data=txt_data, 
+            file_name="cleaned_tensile_data.txt", 
+            mime="text/plain"
+        )
+        
+    with col3:
+        st.download_button(
+            label="📊 Download as Excel", 
+            data=excel_data, 
+            file_name="cleaned_tensile_data.xlsx", 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
